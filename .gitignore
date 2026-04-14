@@ -38,3 +38,8 @@ Thumbs.db
 # Scanner output
 report.json
 *.log
+
+# Personal notes / drafts that should stay local
+PROMO_POSTS.md
+NOTES.md
+TODO.md
