@@ -3,7 +3,7 @@
 > Scan READMEs, skills, and source code for prompt-injection attacks
 > targeting AI coding assistants.
 
-[![CI](https://github.com/urasav12061997-rgb/prompt-injection-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/urasav12061997-rgb/prompt-injection-scanner/actions/workflows/ci.yml)
+[![CI](https://github.com/savaryncraftlab/prompt-injection-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/savaryncraftlab/prompt-injection-scanner/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![status](https://img.shields.io/badge/status-experimental-orange)
@@ -58,7 +58,7 @@ They're all in [`examples/`](./examples/).
 ## Quick start
 
 ```bash
-git clone https://github.com/urasav12061997-rgb/prompt-injection-scanner.git
+git clone https://github.com/savaryncraftlab/prompt-injection-scanner.git
 cd prompt-injection-scanner
 
 # Scan the bundled attack samples
@@ -182,7 +182,7 @@ prompt injections:
 ```yaml
 - name: Scan for prompt injections
   run: |
-    git clone https://github.com/urasav12061997-rgb/prompt-injection-scanner.git /tmp/pis
+    git clone https://github.com/savaryncraftlab/prompt-injection-scanner.git /tmp/pis
     python /tmp/pis/scanner.py . --min-severity HIGH
 ```
 

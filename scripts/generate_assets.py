@@ -127,7 +127,7 @@ def generate_social_preview() -> Path:
         draw_feature(680, 340 + i * 80, num, label)
 
     # URL footer
-    url = "github.com/urasav12061997-rgb/prompt-injection-scanner"
+    url = "github.com/savaryncraftlab/prompt-injection-scanner"
     draw.text((80, 560), url, font=url_font, fill=ACCENT_BLUE)
 
     # Bottom accent
