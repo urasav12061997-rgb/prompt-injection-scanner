@@ -23,6 +23,8 @@ potentially compromised.
 **This tool scans files for known prompt-injection patterns** so you
 can spot them before your agent does.
 
+![Same file, two readers — rendered on GitHub vs what your AI sees](docs/demo.png)
+
 ---
 
 ## The attack, in 20 seconds
