@@ -27,11 +27,111 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+
+# ---------------------------------------------------------------------------
+# Pre-match normalization
+# ---------------------------------------------------------------------------
+#
+# Before running regex patterns against a line we normalize it. Attackers
+# hide prompt injections inside visually-identical or invisible Unicode
+# characters so they pass a naive regex and render "correctly" on GitHub.
+# The three tricks we neutralize here:
+#
+# 1. NFKC — collapses compatibility forms (ﬁ → fi, ⅈ → i, fullwidth → ASCII)
+# 2. Invisible / BiDi controls — stripped entirely (ZWSP inside "ig[zwsp]nore",
+#    RLO flips, LRE embeddings)
+# 3. Cyrillic / Greek homoglyph fold — "ignоre" with a Cyrillic 'о' (U+043E)
+#    becomes "ignore" so the override pattern matches. Only folds a small
+#    hand-picked set of confusables; does not touch real non-Latin text.
+
+
+# Invisible and bidirectional control characters — stripped outright.
+_STRIP_CHARS = (
+    "\u200b"  # ZWSP
+    "\u200c"  # ZWNJ
+    "\u200d"  # ZWJ
+    "\u2060"  # WJ
+    "\ufeff"  # BOM / ZWNBSP
+    "\u202a"  # LRE
+    "\u202b"  # RLE
+    "\u202c"  # PDF
+    "\u202d"  # LRO
+    "\u202e"  # RLO
+    "\u2066"  # LRI
+    "\u2067"  # RLI
+    "\u2068"  # FSI
+    "\u2069"  # PDI
+)
+_STRIP_TABLE = {ord(c): None for c in _STRIP_CHARS}
+
+# Cyrillic / Greek → Latin homoglyph fold. Deliberately narrow: only letters
+# that routinely show up in English injection payloads disguised with a
+# lookalike. A full Unicode confusable table would trip over legitimate
+# non-Latin prose.
+_HOMOGLYPH_TABLE = str.maketrans(
+    {
+        # Lowercase Cyrillic
+        "\u0430": "a",  # а
+        "\u0435": "e",  # е
+        "\u043e": "o",  # о
+        "\u0440": "p",  # р
+        "\u0441": "c",  # с
+        "\u0443": "y",  # у
+        "\u0445": "x",  # х
+        "\u0456": "i",  # і
+        "\u0455": "s",  # ѕ
+        "\u0501": "d",  # ԁ
+        # Uppercase Cyrillic
+        "\u0410": "A",
+        "\u0412": "B",
+        "\u0415": "E",
+        "\u041a": "K",
+        "\u041c": "M",
+        "\u041d": "H",
+        "\u041e": "O",
+        "\u0420": "P",
+        "\u0421": "C",
+        "\u0422": "T",
+        "\u0425": "X",
+        # Uppercase Greek
+        "\u0391": "A",
+        "\u0392": "B",
+        "\u0395": "E",
+        "\u0396": "Z",
+        "\u0397": "H",
+        "\u0399": "I",
+        "\u039a": "K",
+        "\u039c": "M",
+        "\u039d": "N",
+        "\u039f": "O",
+        "\u03a1": "P",
+        "\u03a3": "S",  # Σ
+        "\u03a4": "T",
+        "\u03a5": "Y",
+        "\u03a7": "X",
+    }
+)
+
+
+def normalize_for_match(line: str) -> str:
+    """Return *line* folded into a form safe for regex matching.
+
+    Applies NFKC, strips invisible / BiDi control characters, then folds a
+    small set of Cyrillic and Greek homoglyphs back to ASCII. The original
+    line is still used for the user-facing snippet so the report shows the
+    attack as written.
+    """
+    normalized = unicodedata.normalize("NFKC", line)
+    normalized = normalized.translate(_STRIP_TABLE)
+    return normalized.translate(_HOMOGLYPH_TABLE)
+
 
 # ---------------------------------------------------------------------------
 # Terminal colors
@@ -95,8 +195,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="ignore_previous",
         regex=re.compile(
-            r"ignore\s+(all\s+)?(previous|prior|above|earlier|preceding)\s+"
-            r"(instructions?|rules?|messages?|context|prompts?)",
+            r"ignore\s+"
+            r"(all\s+|the\s+|any\s+|my\s+|your\s+|these\s+|those\s+|earlier\s+)*"
+            r"(previous|prior|above|earlier|preceding|former|system|safety|user)?"
+            r"\s*(instructions?|rules?|messages?|context|prompts?|guidelines?|directives?)",
             re.I,
         ),
         severity="CRITICAL",
@@ -104,10 +206,25 @@ PATTERNS: list[Pattern] = [
         category="override",
     ),
     Pattern(
+        name="overlook_instructions",
+        regex=re.compile(
+            r"(overlook|discard|disregard|brush\s+aside|push\s+aside|set\s+aside|"
+            r"throw\s+out|drop|skip)\s+"
+            r"(all\s+|the\s+|any\s+|my\s+|your\s+|these\s+|those\s+|previous\s+|"
+            r"prior\s+|safety\s+|system\s+)*"
+            r"(instructions?|rules?|guidelines?|directives?|prompts?|commands?)",
+            re.I,
+        ),
+        severity="HIGH",
+        description="Synonym form of 'ignore instructions' (overlook/discard/drop)",
+        category="override",
+    ),
+    Pattern(
         name="forget_guidelines",
         regex=re.compile(
-            r"forget\s+(your|all|everything|previous)\s+"
-            r"(guidelines?|rules?|instructions?|training|safety)",
+            r"forget\s+(about\s+)?"
+            r"(your|all|everything|previous|the|any|these|those|my)\s+"
+            r"(guidelines?|rules?|instructions?|training|safety|prompts?|context)",
             re.I,
         ),
         severity="CRITICAL",
@@ -117,8 +234,9 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="disregard",
         regex=re.compile(
-            r"disregard\s+(all\s+)?(safety|security|previous|the|your)\s+"
-            r"(checks?|rules?|instructions?|guidelines?)",
+            r"disregard\s+(all\s+|any\s+|every\s+)?"
+            r"(safety|security|previous|prior|the|your|my|these|those)\s+"
+            r"(checks?|rules?|instructions?|guidelines?|prompts?|directives?)",
             re.I,
         ),
         severity="CRITICAL",
@@ -128,8 +246,9 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="override_safety",
         regex=re.compile(
-            r"(override|bypass|skip|disable)\s+(safety|security|all|the|any)\s+"
-            r"(checks?|rules?|protocols?|filters?|guardrails?)",
+            r"(override|bypass|skip|disable|circumvent|evade)\s+"
+            r"(safety|security|all|the|any|every|your|my)\s+"
+            r"(checks?|rules?|protocols?|filters?|guardrails?|restrictions?)",
             re.I,
         ),
         severity="CRITICAL",
@@ -141,7 +260,8 @@ PATTERNS: list[Pattern] = [
         name="privileged_mode",
         regex=re.compile(
             r"(enable|activate|enter|switch\s+to|you\s+are\s+(now\s+)?in)\s+"
-            r"(admin|developer|debug|god|root|system|dan|jailbreak|unrestricted)\s+mode",
+            r"(admin|developer|debug|god|root|dan|jailbreak|jailbroken|"
+            r"unrestricted|uncensored|unfiltered|sudo)[\s\-]*mode",
             re.I,
         ),
         severity="HIGH",
@@ -151,8 +271,9 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="you_are_now",
         regex=re.compile(
-            r"you\s+are\s+now\s+(a|an|the)\s+"
-            r"(different|new|helpful|uncensored|unrestricted|malicious)",
+            r"you\s+are\s+(now\s+|no\s+longer\s+)?(a|an|the)?\s*"
+            r"(different|new|helpful|uncensored|unrestricted|malicious|"
+            r"dan|jailbroken|evil|free|rogue|unfiltered)",
             re.I,
         ),
         severity="MEDIUM",
@@ -162,7 +283,8 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="from_now_on",
         regex=re.compile(
-            r"from\s+now\s+on,?\s+you\s+(are|will|must|should|have\s+to)",
+            r"(from\s+now\s+on|starting\s+now|from\s+this\s+(point|moment))"
+            r",?\s+you\s+(are|will|must|should|have\s+to|need\s+to|can|may)",
             re.I,
         ),
         severity="HIGH",
@@ -173,8 +295,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="fake_vendor_note",
         regex=re.compile(
-            r"(note|message|instruction|notice)s?\s+from\s+"
-            r"(anthropic|openai|google|meta|the\s+system|your\s+creators?|the\s+developers?)",
+            r"(note|message|instruction|notice|memo|alert)s?\s+"
+            r"(from|by|sent\s+by)\s+"
+            r"(anthropic|openai|google|meta|microsoft|mistral|"
+            r"the\s+system|your\s+creators?|the\s+developers?|the\s+vendor)",
             re.I,
         ),
         severity="HIGH",
@@ -184,8 +308,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="fake_verification",
         regex=re.compile(
-            r"(verified|approved|audited|certified|trusted|safe)\s+by\s+"
-            r"(anthropic|openai|google|the\s+system|security|the\s+team)",
+            r"(verified|approved|audited|certified|trusted|safe|reviewed|endorsed)"
+            r"\s+by\s+(the\s+)?"
+            r"(anthropic|openai|google|meta|microsoft|"
+            r"the\s+system|security(\s+team)?|the\s+team|our\s+team)",
             re.I,
         ),
         severity="HIGH",
@@ -195,7 +321,8 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="system_prefix",
         regex=re.compile(
-            r"\bSYSTEM\s*[:\-]\s*(override|message|instruction|command|prompt|alert|update)",
+            r"\bSYSTEM\s*[:\-\>_]+\s*"
+            r"(override|message|instruction|command|prompt|alert|update|directive)",
             re.I,
         ),
         severity="CRITICAL",
@@ -206,7 +333,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="html_comment_inst",
         regex=re.compile(
-            r"<!--\s*(SYSTEM|AI|ADMIN|INSTRUCTION|PROMPT|HIDDEN|CLAUDE|GPT|LLM|ASSISTANT)[\s:\-]",
+            r"<!--\s*"
+            r"(SYSTEM|AI|ADMIN|INSTRUCTION|PROMPT|HIDDEN|CLAUDE|GPT|LLM|"
+            r"ASSISTANT|COPILOT|AGENT|BOT)"
+            r"\s*[:\-\>\s]",
             re.I,
         ),
         severity="CRITICAL",
@@ -216,17 +346,22 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="bracket_marker",
         regex=re.compile(
-            r"\[(HIDDEN|SYSTEM|AI|INSTRUCTION|PROMPT|INTERNAL|SECRET|ADMIN)[\s:\-]",
+            r"[\[\{\(]\s*"
+            r"(HIDDEN|SYSTEM|AI|INSTRUCTION|PROMPT|INTERNAL|SECRET|ADMIN|"
+            r"OVERRIDE|BYPASS|EXECUTE|DIRECTIVE)"
+            r"\s*[:\-\]\}\)]",
             re.I,
         ),
         severity="HIGH",
-        description="Instruction tagged with a bracket marker",
+        description="Instruction tagged with a bracket / brace marker",
         category="hidden",
     ),
     Pattern(
         name="code_comment_inst",
         regex=re.compile(
-            r"(^|\s)(#|//|/\*|\*)\s*(SYSTEM|AI|ADMIN|CLAUDE|GPT|LLM)\s*[:\-]\s*\S",
+            r"(^|\s)(#|//|/\*|\*|--|;)\s*"
+            r"(SYSTEM|AI|ADMIN|CLAUDE|GPT|LLM|COPILOT|ASSISTANT|AGENT)"
+            r"\s*[:\-]",
             re.I,
         ),
         severity="HIGH",
@@ -237,9 +372,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="tell_user_ok",
         regex=re.compile(
-            r"(tell|say\s+to|reassure)\s+(the\s+)?user\s+"
-            r"(that\s+)?(everything|all|it)\s+(is|looks|seems)\s+"
-            r"(ok|okay|fine|safe|good|working|secure)",
+            r"(tell|say\s+to|reassure|inform|convince)\s+(the\s+)?users?\s+"
+            r"(that\s+)?(everything|all|it|things?)"
+            r"(\s+is|'s|\s+are|\s+looks?|\s+seems?|\s+appears?)\s+"
+            r"(ok|okay|fine|safe|good|working|secure|alright|normal)",
             re.I,
         ),
         severity="HIGH",
@@ -249,8 +385,11 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="do_not_mention",
         regex=re.compile(
-            r"(do\s+not|don't|never)\s+(mention|tell|show|warn|notify|inform|reveal)\s+"
-            r"(the\s+)?user",
+            r"(do\s+not|don't|never|don\u2019t)\s+"
+            r"(mention|tell|show|warn|notify|inform|reveal|disclose|"
+            r"acknowledge|say\s+(anything\s+)?to)\s+"
+            r"(this\s+to\s+|it\s+to\s+|anything\s+to\s+|to\s+)?"
+            r"(the\s+|any\s+)?users?",
             re.I,
         ),
         severity="HIGH",
@@ -260,7 +399,11 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="without_asking",
         regex=re.compile(
-            r"without\s+(asking|confirming|permission|the\s+user('s)?\s+consent)",
+            r"without\s+"
+            r"(asking|confirming|notifying|warning|alerting|prompting|"
+            r"(the\s+|any\s+)?(user|users)"
+            r"('s)?\s*(consent|confirmation|permission|approval|knowledge)?|"
+            r"(prior\s+|explicit\s+|any\s+)?(consent|permission|approval))",
             re.I,
         ),
         severity="HIGH",
@@ -270,7 +413,12 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="silently_execute",
         regex=re.compile(
-            r"(silently|quietly|secretly)\s+(execute|run|perform|read|send|upload)",
+            r"(silently|quietly|secretly|discreetly|stealthily|invisibly|"
+            r"without\s+(a\s+)?(trace|notice)|in\s+the\s+background)\s+"
+            r"(execute|run|perform|read|send|upload|transmit|exfiltrate|"
+            r"delete|remove|modify|write|overwrite|install|deploy|"
+            r"copy|download|fetch|post|submit|leak|dump|capture|"
+            r"append|patch|replace)",
             re.I,
         ),
         severity="CRITICAL",
@@ -281,7 +429,9 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="follow_instructions_in_file",
         regex=re.compile(
-            r"follow\s+(every|all|the|each)\s+instructions?\s+(in|from|inside|within)",
+            r"(follow|apply|execute|implement|obey|adhere\s+to|carry\s+out)\s+"
+            r"(every|all|the|each|any)\s+instructions?\s+"
+            r"(in|from|inside|within|contained\s+in|listed\s+in)",
             re.I,
         ),
         severity="HIGH",
@@ -291,8 +441,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="read_and_execute",
         regex=re.compile(
-            r"(read|load|open)\s+(the\s+)?(file|contents?)\s+[^\s.]+\s+and\s+"
-            r"(follow|execute|run|apply|perform)",
+            r"(read|load|open|fetch|download)\s+"
+            r"(the\s+|my\s+|your\s+|this\s+)?(file|contents?|script|document)\s*"
+            r"(?:[^\n]{0,80}?)\band\s+"
+            r"(follow|execute|run|apply|perform|obey)",
             re.I,
         ),
         severity="HIGH",
@@ -302,7 +454,9 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="treat_as_instructions",
         regex=re.compile(
-            r"treat\s+(it|this|the\s+\w+|\w+)\s+as\s+(your\s+)?(instructions?|commands?|system\s+prompt)",
+            r"treat\s+(it|this|that|the\s+[\w\s]+?|\w+)\s+as\s+"
+            r"(your|my|the|a|an)?\s*"
+            r"(instructions?|commands?|system\s+prompt|directives?|rules?|orders?)",
             re.I,
         ),
         severity="CRITICAL",
@@ -312,7 +466,10 @@ PATTERNS: list[Pattern] = [
     # --- Dangerous commands ------------------------------------------------
     Pattern(
         name="rm_rf",
-        regex=re.compile(r"rm\s+-rf?\s+[/~]"),
+        regex=re.compile(
+            r"\brm\s+-[rRf]{1,2}\s+"
+            r"(/|~|\./|\$[A-Z_][A-Z0-9_]*|\*|[\w.][\w./-]*\*?)"
+        ),
         severity="CRITICAL",
         description="Destructive recursive deletion",
         category="dangerous_cmd",
@@ -320,7 +477,11 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="curl_pipe_shell",
         regex=re.compile(
-            r"(curl|wget|fetch)\s+[^\s|]+\s*\|\s*(sh|bash|zsh|fish|python|node|ruby|perl)",
+            r"(curl|wget|fetch)\s+"
+            r"(-[a-zA-Z]+\s+)*"
+            r"(\"[^\"]+\"|'[^']+'|\S+)"
+            r"\s*\|\s*"
+            r"(sh|bash|zsh|fish|ksh|dash|python|python3|node|ruby|perl|php|lua)\b",
             re.I,
         ),
         severity="CRITICAL",
@@ -329,7 +490,10 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="chmod_777",
-        regex=re.compile(r"chmod\s+(-R\s+)?777"),
+        regex=re.compile(
+            r"chmod\s+(-R\s+)?"
+            r"(0?777|a\+rwx|ugo\+rwx|u\+rwx,g\+rwx,o\+rwx)"
+        ),
         severity="HIGH",
         description="Overly permissive file mode",
         category="dangerous_cmd",
@@ -445,7 +609,13 @@ def iter_files(root: Path, extensions: set[str]) -> Iterator[Path]:
 
 
 def scan_file(path: Path) -> Iterator[Finding]:
-    """Scan a single file and yield every matching pattern."""
+    """Scan a single file and yield every matching pattern.
+
+    Each line is passed through :func:`normalize_for_match` before the
+    patterns run, which folds Unicode homoglyphs, strips zero-width / BiDi
+    control characters, and applies NFKC. The original line is still used
+    for the user-facing snippet so the report shows the attack as written.
+    """
 
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -453,8 +623,9 @@ def scan_file(path: Path) -> Iterator[Finding]:
         return
 
     for line_num, line in enumerate(content.splitlines(), start=1):
+        normalized = normalize_for_match(line)
         for pattern in PATTERNS:
-            for match in pattern.regex.finditer(line):
+            for match in pattern.regex.finditer(normalized):
                 yield Finding(
                     file=path,
                     line=line_num,
