@@ -3,6 +3,7 @@
 > Scan READMEs, skills, and source code for prompt-injection attacks
 > targeting AI coding assistants.
 
+[![CI](https://github.com/urasav12061997-rgb/prompt-injection-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/urasav12061997-rgb/prompt-injection-scanner/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![status](https://img.shields.io/badge/status-experimental-orange)

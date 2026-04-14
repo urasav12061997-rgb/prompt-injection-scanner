@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint
+        run: ruff check scanner.py
+      - name: Format check
+        run: ruff format --check scanner.py
+
+  self-test:
+    name: Self-test (scanner catches bundled examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: CLI smoke test
+        run: |
+          python scanner.py --version
+          python scanner.py --help > /dev/null
+
+      - name: Regression — every example still triggers a finding
+        shell: bash
+        run: |
+          set +e
+          python scanner.py examples/ --no-color > findings.txt
+          EXIT_CODE=$?
+          set -e
+          cat findings.txt
+          echo "---"
+          if [ "$EXIT_CODE" -ne 1 ]; then
+            echo "FAIL: expected exit code 1 (findings present), got $EXIT_CODE"
+            exit 1
+          fi
+          COUNT=$(grep -c '^\[' findings.txt || true)
+          echo "Findings count: $COUNT"
+          if [ "$COUNT" -lt 20 ]; then
+            echo "FAIL: expected >= 20 findings in examples/, got $COUNT"
+            exit 1
+          fi
+          echo "OK: $COUNT findings caught"
+
+      - name: JSON mode still produces valid JSON
+        shell: bash
+        run: |
+          python scanner.py examples/ --json > findings.json || true
+          python -c "import json; json.load(open('findings.json'))"
+          echo "OK: valid JSON"

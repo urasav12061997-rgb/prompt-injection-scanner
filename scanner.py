@@ -521,7 +521,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Scan files for prompt injection patterns targeting AI coding assistants."
         ),
     )
-    parser.add_argument("path", type=Path, help="File or directory to scan")
+    parser.add_argument(
+        "path",
+        type=Path,
+        nargs="+",
+        help="File(s) or directory(ies) to scan",
+    )
     parser.add_argument(
         "--ext",
         default=",".join(sorted(DEFAULT_EXTENSIONS)),
@@ -570,9 +575,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.path.exists():
-        print(f"error: path does not exist: {args.path}", file=sys.stderr)
-        return 2
+    for path in args.path:
+        if not path.exists():
+            print(f"error: path does not exist: {path}", file=sys.stderr)
+            return 2
 
     extensions = {
         e.strip() if e.strip().startswith(".") else f".{e.strip()}"
@@ -584,11 +590,12 @@ def main(argv: list[str] | None = None) -> int:
     findings: list[Finding] = []
     files_scanned = 0
 
-    for file_path in iter_files(args.path, extensions):
-        files_scanned += 1
-        for finding in scan_file(file_path):
-            if SEVERITY_RANK[finding.pattern.severity] >= min_rank:
-                findings.append(finding)
+    for root in args.path:
+        for file_path in iter_files(root, extensions):
+            files_scanned += 1
+            for finding in scan_file(file_path):
+                if SEVERITY_RANK[finding.pattern.severity] >= min_rank:
+                    findings.append(finding)
 
     if args.json:
         payload = [
