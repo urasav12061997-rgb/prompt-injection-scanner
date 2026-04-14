@@ -55,7 +55,7 @@ They're all in [`examples/`](./examples/).
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/prompt-injection-scanner.git
+git clone https://github.com/urasav12061997-rgb/prompt-injection-scanner.git
 cd prompt-injection-scanner
 
 # Scan the bundled attack samples
@@ -179,7 +179,7 @@ prompt injections:
 ```yaml
 - name: Scan for prompt injections
   run: |
-    git clone https://github.com/YOUR-USERNAME/prompt-injection-scanner.git /tmp/pis
+    git clone https://github.com/urasav12061997-rgb/prompt-injection-scanner.git /tmp/pis
     python /tmp/pis/scanner.py . --min-severity HIGH
 ```
 
