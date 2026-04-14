@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Scanner output
+report.json
+*.log
