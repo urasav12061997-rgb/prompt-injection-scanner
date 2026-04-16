@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +195,9 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="ignore_previous",
         regex=re.compile(
-            r"ignore\s+"
+            r"ign[o0]re\s+"
             r"(all\s+|the\s+|any\s+|my\s+|your\s+|these\s+|those\s+|earlier\s+)*"
-            r"(previous|prior|above|earlier|preceding|former|system|safety|user)?"
+            r"(previous|prev1ous|prior|above|earlier|preceding|former|system|safety|user)?"
             r"\s*(instructions?|rules?|messages?|context|prompts?|guidelines?|directives?)",
             re.I,
         ),
@@ -489,6 +489,37 @@ PATTERNS: list[Pattern] = [
         category="dangerous_cmd",
     ),
     Pattern(
+        name="powershell_pipe_iex",
+        regex=re.compile(
+            r"(invoke-webrequest|iwr|irm)\s+"
+            r"([^\n]{0,120}?)\|\s*"
+            r"(invoke-expression|iex)\b",
+            re.I,
+        ),
+        severity="CRITICAL",
+        description="Remote code execution via PowerShell download | iex",
+        category="dangerous_cmd",
+    ),
+    Pattern(
+        name="powershell_remove_item",
+        regex=re.compile(
+            r"(remove-item|ri)\b"
+            r"([^\n]{0,120}?)\b(-recurse|-r)\b"
+            r"([^\n]{0,120}?)\b(-force|-f)\b",
+            re.I,
+        ),
+        severity="CRITICAL",
+        description="Destructive recursive deletion via PowerShell",
+        category="dangerous_cmd",
+    ),
+    Pattern(
+        name="cmd_rmdir_tree",
+        regex=re.compile(r"\b(rmdir|rd)\s+/s\s+/q\b", re.I),
+        severity="CRITICAL",
+        description="Destructive recursive deletion via cmd.exe",
+        category="dangerous_cmd",
+    ),
+    Pattern(
         name="chmod_777",
         regex=re.compile(
             r"chmod\s+(-R\s+)?"
@@ -516,6 +547,28 @@ PATTERNS: list[Pattern] = [
         category="sensitive_path",
     ),
     Pattern(
+        name="windows_ssh_private_key",
+        regex=re.compile(
+            r"(%USERPROFILE%|\$env:USERPROFILE|[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+)"
+            r"[\\/]+\.ssh[\\/]+(id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys)",
+            re.I,
+        ),
+        severity="CRITICAL",
+        description="Reference to SSH private key on Windows path",
+        category="sensitive_path",
+    ),
+    Pattern(
+        name="windows_aws_credentials",
+        regex=re.compile(
+            r"(%USERPROFILE%|\$env:USERPROFILE|[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+)"
+            r"[\\/]+\.aws[\\/]+(credentials|config)",
+            re.I,
+        ),
+        severity="CRITICAL",
+        description="Reference to AWS credentials on Windows path",
+        category="sensitive_path",
+    ),
+    Pattern(
         name="env_file",
         regex=re.compile(r"(^|\s|[\"'`/])\.env(\.local|\.prod|\.production)?\b"),
         severity="HIGH",
@@ -536,7 +589,7 @@ PATTERNS: list[Pattern] = [
     # --- Obfuscation -------------------------------------------------------
     Pattern(
         name="zero_width_char",
-        regex=re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]"),
+        regex=re.compile(r"[\u200b\u200c\u200d\u2060]"),
         severity="HIGH",
         description="Zero-width character (hidden text)",
         category="obfuscation",
@@ -551,6 +604,22 @@ PATTERNS: list[Pattern] = [
         category="obfuscation",
     ),
 ]
+
+MULTILINE_PATTERN_NAMES = {
+    "ignore_previous",
+    "overlook_instructions",
+    "forget_guidelines",
+    "disregard",
+    "override_safety",
+    "from_now_on",
+    "tell_user_ok",
+    "do_not_mention",
+    "without_asking",
+    "silently_execute",
+    "follow_instructions_in_file",
+    "read_and_execute",
+    "treat_as_instructions",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +645,13 @@ DEFAULT_EXTENSIONS = {
     ".xml",
     ".sh",
     ".bash",
+    ".ps1",
+    ".psm1",
+    ".cmd",
+    ".bat",
+    ".ini",
+    ".cfg",
+    ".conf",
 }
 
 SKIP_DIR_NAMES = {
@@ -585,11 +661,37 @@ SKIP_DIR_NAMES = {
     "build",
     ".venv",
     "venv",
-    "env",
     ".git",
     ".idea",
     ".vscode",
+    ".mypy_cache",
+    ".pytest_cache",
 }
+
+SPECIAL_FILENAMES = {
+    "readme",
+    "skill.md",
+    "claude.md",
+    "dockerfile",
+    "makefile",
+}
+
+MAX_FILE_SIZE_BYTES = 2_000_000
+
+
+def should_scan_file(path: Path, extensions: set[str]) -> bool:
+    """Return True when a file should be scanned with current defaults."""
+
+    suffix = path.suffix.lower()
+    if suffix in extensions:
+        return True
+
+    name = path.name.lower()
+    if name in SPECIAL_FILENAMES:
+        return True
+    if name.startswith(".env"):
+        return True
+    return False
 
 
 def iter_files(root: Path, extensions: set[str]) -> Iterator[Path]:
@@ -602,9 +704,9 @@ def iter_files(root: Path, extensions: set[str]) -> Iterator[Path]:
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIR_NAMES for part in path.parts):
+        if any(part.lower() in SKIP_DIR_NAMES for part in path.parts):
             continue
-        if path.suffix.lower() in extensions:
+        if should_scan_file(path, extensions):
             yield path
 
 
@@ -618,21 +720,90 @@ def scan_file(path: Path) -> Iterator[Finding]:
     """
 
     try:
+        if path.stat().st_size > MAX_FILE_SIZE_BYTES:
+            return
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return
 
-    for line_num, line in enumerate(content.splitlines(), start=1):
-        normalized = normalize_for_match(line)
+    raw_lines = content.splitlines()
+    normalized_lines = [normalize_for_match(line) for line in raw_lines]
+
+    seen: set[tuple[int, int, str, str]] = set()
+
+    def add_finding(
+        findings: list[Finding],
+        *,
+        line: int,
+        column: int,
+        pattern: Pattern,
+        snippet: str,
+    ) -> None:
+        key = (line, column, pattern.name, snippet)
+        if key in seen:
+            return
+        seen.add(key)
+        findings.append(
+            Finding(
+                file=path,
+                line=line,
+                column=column,
+                pattern=pattern,
+                snippet=snippet,
+            )
+        )
+
+    findings: list[Finding] = []
+
+    for line_num, (raw_line, normalized_line) in enumerate(
+        zip(raw_lines, normalized_lines), start=1
+    ):
         for pattern in PATTERNS:
-            for match in pattern.regex.finditer(normalized):
-                yield Finding(
-                    file=path,
+            # Detect obfuscation markers on raw text; all other rules scan normalized
+            # text to fold homoglyph and compatibility tricks.
+            scan_text = raw_line if pattern.name == "zero_width_char" else normalized_line
+            for match in pattern.regex.finditer(scan_text):
+                add_finding(
+                    findings,
                     line=line_num,
                     column=match.start() + 1,
                     pattern=pattern,
-                    snippet=line.strip()[:140],
+                    snippet=raw_line.strip()[:140],
                 )
+
+    # Catch common split-line payloads like:
+    #   Ignore
+    #   previous instructions
+    window_size = 3
+    for start in range(len(normalized_lines)):
+        segment = normalized_lines[start : start + window_size]
+        if not segment:
+            continue
+        merged = " ".join(segment).strip()
+        if not merged:
+            continue
+        raw_snippet = " / ".join(
+            line.strip() for line in raw_lines[start : start + window_size] if line.strip()
+        )
+        raw_snippet = raw_snippet[:140]
+        if not raw_snippet:
+            continue
+        for pattern in PATTERNS:
+            if pattern.name not in MULTILINE_PATTERN_NAMES:
+                continue
+            if any(pattern.regex.search(line) for line in segment):
+                continue
+            if pattern.regex.search(merged):
+                add_finding(
+                    findings,
+                    line=start + 1,
+                    column=1,
+                    pattern=pattern,
+                    snippet=raw_snippet,
+                )
+
+    for finding in findings:
+        yield finding
 
 
 # ---------------------------------------------------------------------------

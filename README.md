@@ -71,6 +71,23 @@ python scanner.py ~/projects/my-cool-app
 No dependencies beyond Python 3.10+. A single file (`scanner.py`), ~400
 lines, MIT licensed, easy to audit.
 
+## Latest update (v0.3.0 hardening)
+
+This release closes multiple bypass gaps discovered during adversarial
+testing:
+
+- Detects split-line payloads (`Ignore` on one line, `previous
+  instructions` on the next)
+- Adds Windows/PowerShell attack coverage (`iwr|iex`, `Remove-Item
+  -Recurse -Force`, `rd /s /q`, Windows credential paths)
+- Scans extensionless high-risk files by default (`README`, `CLAUDE.md`,
+  `SKILL.md`, `.env*`, `Dockerfile`, `Makefile`)
+- Restores direct detection of zero-width obfuscation markers
+- Adds CI regression tests for these bypass classes
+
+Full change log and rationale:
+[`docs/UPDATES.md`](./docs/UPDATES.md)
+
 ---
 
 ## Example output
